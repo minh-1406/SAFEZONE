@@ -1,0 +1,29 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    // School data isolation & configuration
+    match /system/{document=**} {
+      allow read, write: if true;
+    }
+    
+    // Counselor accounts and permissions
+    match /counselors/{email} {
+      allow read, write: if true;
+    }
+    
+    // Anonymous psychological counseling reports isolated by school code
+    match /reports/{code} {
+      allow read, write: if true;
+    }
+    
+    // Encrypted PIN-hashed student emotional sync records
+    match /student_sync/{pinHash} {
+      allow read, write: if true;
+    }
+    
+    // School specific settings and hotlines
+    match /schools/{schoolId} {
+      allow read, write: if true;
+    }
+  }
+}

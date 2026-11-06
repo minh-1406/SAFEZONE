@@ -1,0 +1,6 @@
+{
+  "name": "Chống Bạo Lực Học Đường & Hỗ Trợ Tâm Lý",
+  "description": "Nền tảng báo cáo ẩn danh và hỗ trợ tâm lý tức thời cho học sinh bị bạo lực học đường và bạo lực mạng.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}

@@ -1,0 +1,63 @@
+{
+  "entities": {
+    "systemConfig": {
+      "title": "System Config",
+      "description": "System config",
+      "type": "object",
+      "properties": {
+        "isInitialized": { "type": "boolean" },
+        "schoolName": { "type": "string" },
+        "schools": { "type": "array" }
+      }
+    },
+    "counselor": {
+      "title": "Counselor",
+      "description": "Counselor profile",
+      "type": "object",
+      "properties": {
+        "email": { "type": "string" },
+        "name": { "type": "string" },
+        "school": { "type": "string" },
+        "role": { "type": "string" }
+      }
+    },
+    "report": {
+      "title": "Report",
+      "description": "Anonymous report",
+      "type": "object",
+      "properties": {
+        "code": { "type": "string" },
+        "schoolName": { "type": "string" },
+        "status": { "type": "string" }
+      }
+    },
+    "studentSyncRecord": {
+      "title": "Student Sync Record",
+      "description": "Encrypted PIN-associated student emotional state and survey synchronization",
+      "type": "object",
+      "properties": {
+        "pinHash": { "type": "string" },
+        "updatedAt": { "type": "string" },
+        "data": { "type": "object" }
+      }
+    }
+  },
+  "firestore": {
+    "system/config": {
+      "schema": { "$ref": "#/entities/systemConfig" },
+      "description": "Config"
+    },
+    "counselors/{email}": {
+      "schema": { "$ref": "#/entities/counselor" },
+      "description": "Counselor"
+    },
+    "reports/{code}": {
+      "schema": { "$ref": "#/entities/report" },
+      "description": "Report"
+    },
+    "student_sync/{pinHash}": {
+      "schema": { "$ref": "#/entities/studentSyncRecord" },
+      "description": "Student PIN Sync Record"
+    }
+  }
+}
