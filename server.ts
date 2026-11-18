@@ -1252,7 +1252,7 @@ app.post("/api/gemini/chat", async (req, res) => {
     }));
 
     const response = await aiClient.models.generateContent({
-      model: "gemini-3.5-flash",
+      model: "gemini-4-hydrogen",
       contents: contents,
       config: {
         systemInstruction,
