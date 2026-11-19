@@ -1,10 +1,9 @@
 import express from "express";
 import path from "path";
-import { createServer as createViteServer } from "vite";
 import { GoogleGenAI } from "@google/genai";
 import dotenv from "dotenv";
 import { initializeApp } from "firebase/app";
-import { getFirestore, doc, getDoc, setDoc, getDocs, collection, deleteDoc } from "firebase/firestore";
+import { initializeFirestore, setLogLevel, doc, getDoc, setDoc, getDocs, collection, deleteDoc } from "firebase/firestore";
 
 dotenv.config();
 
@@ -112,7 +111,8 @@ interface SystemState {
   studentSyncRecords?: Record<string, StudentSyncRecord>;
 }
 
-const DB_FILE = path.join(process.cwd(), "system_db.json");
+const BUNDLED_DB_FILE = path.join(process.cwd(), "system_db.json");
+const DB_FILE = process.env.VERCEL ? "/tmp/system_db.json" : BUNDLED_DB_FILE;
 
 // Default initial state is UNINITIALIZED (empty reports, empty counselors)
 let systemState: SystemState = {
@@ -136,7 +136,12 @@ try {
   if (fs.existsSync(configPath)) {
     const firebaseConfig = JSON.parse(fs.readFileSync(configPath, "utf-8"));
     const firebaseApp = initializeApp(firebaseConfig);
-    db = getFirestore(firebaseApp, firebaseConfig.firestoreDatabaseId);
+    setLogLevel("silent");
+    db = initializeFirestore(
+      firebaseApp,
+      { experimentalForceLongPolling: true, ignoreUndefinedProperties: true },
+      firebaseConfig.firestoreDatabaseId
+    );
     useFirebase = true;
     console.log("[SafeZone Cloud] Firebase & Firestore connected successfully!");
   } else {
@@ -339,8 +344,9 @@ function persistLocalState() {
 
 // Load saved configuration from file on startup if it exists
 try {
-  if (fs.existsSync(DB_FILE)) {
-    const data = fs.readFileSync(DB_FILE, "utf-8");
+  const seedFile = fs.existsSync(DB_FILE) ? DB_FILE : BUNDLED_DB_FILE;
+  if (fs.existsSync(seedFile)) {
+    const data = fs.readFileSync(seedFile, "utf-8");
     systemState = JSON.parse(data);
     console.log("[SafeZone System] Loaded local system_db.json baseline.");
   }
@@ -1242,10 +1248,20 @@ app.post("/api/gemini/chat", async (req, res) => {
   try {
     const { messages } = req.body; // Expects array of [{ role: "user" | "model", message: string }]
     
-    if (!aiClient) {
+    const activeApiKey = process.env.GEMINI_API_KEY || geminiApiKey;
+    const activeClient = aiClient || (activeApiKey ? new GoogleGenAI({
+      apiKey: activeApiKey,
+      httpOptions: {
+        headers: {
+          "User-Agent": "aistudio-build",
+        },
+      },
+    }) : null);
+
+    if (!activeClient) {
       return res.status(503).json({ 
-        error: "Trợ lý AI đang ngoại tuyến.", 
-        reply: "Chào em, hiện tại Thầy cô AI đang có một chút sự cố kết nối kỹ thuật. Tuy nhiên em hãy nhớ áp dụng bộ quy tắc **PAUSE** có sẵn trong mục Cẩm Nang để tự xoa dịu cảm xúc, hoặc gửi báo cáo ẩn danh ngay cho trường nhé!"
+        error: "Trợ lý AI đang ngoại tuyến (chưa cấu hình GEMINI_API_KEY).", 
+        reply: "Chào em, hiện tại Thầy cô AI đang tạm thời ngoại tuyến vì máy chủ chưa được cấu hình khóa API Gemini. Trong lúc chờ Thầy cô kỹ thuật kích hoạt lại, em hãy áp dụng bộ quy tắc **PAUSE** có sẵn trong mục Cẩm Nang để tự xoa dịu cảm xúc, hoặc gửi báo cáo ẩn danh ngay cho trường nhé!"
       });
     }
 
@@ -1270,20 +1286,52 @@ app.post("/api/gemini/chat", async (req, res) => {
       "5. Trả lời bằng tiếng Việt tự nhiên, ấm áp, sử dụng ngôn từ gần gũi của lứa tuổi học sinh (nhưng vẫn lịch sự, gọi người dùng là 'em' xưng 'Thầy cô' hoặc 'Anh chị cố vấn số'). Giữ câu trả lời súc tích, dễ đọc bằng định dạng markdown.";
 
     // Map messages to Gemini API expectations
-    // SDK uses: contents: [{ role: "user" | "model", parts: [{ text: "..." }] }]
     const contents = messages.map((m: any) => ({
       role: m.role === "assistant" ? "model" : "user",
       parts: [{ text: m.message }]
     }));
 
-    const response = await aiClient.models.generateContent({
-      model: "gemini-4-hydrogen",
-      contents: contents,
-      config: {
-        systemInstruction,
-        temperature: 0.7,
-      },
-    });
+    let response;
+    try {
+      response = await activeClient.models.generateContent({
+        model: "gemini-4-hydrogen",
+        contents: contents,
+        config: {
+          systemInstruction,
+          temperature: 0.7,
+        },
+      });
+    } catch (primaryErr: any) {
+      const msg = String(primaryErr?.message || "").toLowerCase();
+      const status = Number(primaryErr?.status || primaryErr?.code || 0);
+      const isApiKeyOrQuotaIssue =
+        msg.includes("api key") ||
+        msg.includes("api_key") ||
+        msg.includes("permission") ||
+        msg.includes("quota") ||
+        status === 429;
+      if (
+        !isApiKeyOrQuotaIssue &&
+        (status === 404 ||
+          status === 400 ||
+          msg.includes("not found") ||
+          msg.includes("404") ||
+          msg.includes("unsupported") ||
+          msg.includes("not supported") ||
+          msg.includes("model"))
+      ) {
+        response = await activeClient.models.generateContent({
+          model: "gemini-2.5-flash",
+          contents: contents,
+          config: {
+            systemInstruction,
+            temperature: 0.7,
+          },
+        });
+      } else {
+        throw primaryErr;
+      }
+    }
 
     const replyText = response.text || "Thầy cô đang lắng nghe em đây. Em hãy chia sẻ thêm nhé.";
     res.json({ reply: replyText });
@@ -1302,6 +1350,7 @@ const isProduction = process.env.NODE_ENV === "production";
 
 async function bootstrap() {
   if (!isProduction) {
+    const { createServer: createViteServer } = await import("vite");
     const vite = await createViteServer({
       server: { middlewareMode: true, hmr: false },
       appType: "spa",
@@ -1320,6 +1369,11 @@ async function bootstrap() {
   });
 }
 
-bootstrap().catch((err) => {
-  console.error("Gặp sự cố khởi động máy chủ tư vấn tâm lý:", err);
-});
+if (!process.env.VERCEL) {
+  bootstrap().catch((err) => {
+    console.error("Gặp sự cố khởi động máy chủ tư vấn tâm lý:", err);
+  });
+}
+
+export { app };
+export default app;
