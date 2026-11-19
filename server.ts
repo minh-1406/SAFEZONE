@@ -14,6 +14,14 @@ const PORT = 3000;
 app.use(express.json({ limit: "50mb" }));
 app.use(express.urlencoded({ extended: true, limit: "50mb" }));
 
+// Handle malformed JSON bodies cleanly with JSON error response
+app.use((err: any, req: express.Request, res: express.Response, next: express.NextFunction) => {
+  if (err instanceof SyntaxError && "body" in err) {
+    return res.status(400).json({ error: "Dữ liệu JSON gửi lên không hợp lệ." });
+  }
+  next(err);
+});
+
 // Thiết lập Headers chặn bộ nhớ đệm (Anti-Caching) cho toàn bộ API để đồng bộ dữ liệu chuẩn xác nhất giữa máy tính & điện thoại
 app.use("/api", (req, res, next) => {
   res.setHeader("Cache-Control", "no-store, no-cache, must-revalidate, proxy-revalidate, max-age=0");
@@ -138,116 +146,151 @@ try {
   console.error("[SafeZone Cloud] Failed to initialize Firestore database:", err);
 }
 
-// Helper: Synchronize memory state from Cloud Firestore
-async function syncFromCloud() {
-  if (!useFirebase || !db) return;
-  try {
-    const configDoc = await getDoc(doc(db, "system", "config"));
-    if (configDoc.exists()) {
-      const configData = configDoc.data();
-      systemState.isInitialized = configData.isInitialized ?? false;
-      systemState.schoolName = configData.schoolName ?? "";
-      systemState.schools = configData.schools ?? [];
-      if (configData.schoolSettings) {
-        systemState.schoolSettings = configData.schoolSettings;
-      }
+// Firestore Quota & Caching Controls (Prevents exhausting free-tier daily read/write limits on 5s/10s polling)
+const CLOUD_SYNC_TTL_MS = 10 * 60 * 1000; // Re-sync from Firestore at most once every 10 minutes
+const QUOTA_COOLDOWN_MS = 30 * 60 * 1000; // Back off for 30 minutes if Firestore quota is exceeded
+let hasInitialCloudSync = false;
+let lastCloudSyncAt = 0;
+let firestoreCooldownUntil = 0;
+let cloudSyncPromise: Promise<void> | null = null;
+
+function isFirestoreQuotaError(err: any): boolean {
+  const msg = String(err?.message || err || "").toLowerCase();
+  const code = String(err?.code || "").toLowerCase();
+  return (
+    code.includes("resource-exhausted") ||
+    msg.includes("quota") ||
+    msg.includes("resource_exhausted") ||
+    msg.includes("resource-exhausted") ||
+    msg.includes("429")
+  );
+}
+
+function handleCloudError(context: string, err: any) {
+  if (isFirestoreQuotaError(err)) {
+    const wasInCooldown = Date.now() < firestoreCooldownUntil;
+    firestoreCooldownUntil = Date.now() + QUOTA_COOLDOWN_MS;
+    if (!wasInCooldown) {
+      console.warn(`[SafeZone CLOUD] ${context}: Firestore daily quota reached. Switching to local persistence (system_db.json) for 30 minutes.`);
     }
-
-    // Load dynamic Counselor list
-    const counselorsCol = await getDocs(collection(db, "counselors"));
-    const tempCounselors: Counselor[] = [];
-    counselorsCol.forEach((docSnap) => {
-      tempCounselors.push(docSnap.data() as Counselor);
-    });
-    if (counselorsCol.size > 0 || configDoc.exists()) {
-      // Direct assignment only if clean Firestore backup exists
-      systemState.counselors = tempCounselors;
-    }
-
-    // Load student anonymous reports
-    const reportsCol = await getDocs(collection(db, "reports"));
-    const tempReports: Report[] = [];
-    reportsCol.forEach((docSnap) => {
-      tempReports.push(docSnap.data() as Report);
-    });
-    if (reportsCol.size > 0 || configDoc.exists()) {
-      // Intelligently merge tempReports with systemState.reports to protect newly submitted reports in RAM
-      const mergedReports = [...systemState.reports];
-
-      tempReports.forEach((cloudReport) => {
-        const uppercaseCode = cloudReport.code.toUpperCase();
-        if (deletedReportCodes.has(uppercaseCode)) {
-          return;
-        }
-
-        const idx = mergedReports.findIndex(r => r.code.toUpperCase() === uppercaseCode);
-        if (idx === -1) {
-          mergedReports.push(cloudReport);
-        } else {
-          const memReport = mergedReports[idx];
-          const cloudMsgCount = cloudReport.responses?.length || 0;
-          const memMsgCount = memReport.responses?.length || 0;
-
-          if (cloudMsgCount > memMsgCount) {
-            mergedReports[idx] = cloudReport;
-          } else if (cloudMsgCount === memMsgCount) {
-            mergedReports[idx] = {
-              ...memReport,
-              status: cloudReport.status,
-              evidenceFiles: cloudReport.evidenceFiles || memReport.evidenceFiles
-            };
-          }
-        }
-      });
-
-      // Filter out deleted or non-existent reports, but keep fresh memory-only reports (within 20s)
-      systemState.reports = mergedReports.filter(memReport => {
-        const uppercaseCode = memReport.code.toUpperCase();
-        if (deletedReportCodes.has(uppercaseCode)) {
-          return false;
-        }
-        const inCloud = tempReports.some(cloudReport => cloudReport.code.toUpperCase() === uppercaseCode);
-        if (inCloud) {
-          return true;
-        }
-        try {
-          const createdAt = new Date(memReport.date).getTime();
-          const ageMs = Date.now() - createdAt;
-          if (ageMs < 20000) {
-            return true; // Safe window for newly submitted reports
-          }
-        } catch {
-          // Fallback
-        }
-        return false;
-      });
-    }
-
-    // Load Student Sync Records from Firestore
-    try {
-      const studentSyncCol = await getDocs(collection(db, "student_sync"));
-      if (studentSyncCol.size > 0) {
-        if (!systemState.studentSyncRecords) systemState.studentSyncRecords = {};
-        studentSyncCol.forEach((docSnap) => {
-          const rec = docSnap.data() as StudentSyncRecord;
-          if (rec && rec.pinHash) {
-            systemState.studentSyncRecords![rec.pinHash] = rec;
-          }
-        });
-      }
-    } catch (e) {
-      console.warn("[SafeZone CLOUD] Could not load student_sync collection:", e);
-    }
-
-    console.log(`[SafeZone CLOUD] Synchronized state with cloud Firestore. Counselors: ${systemState.counselors.length}, Reports: ${systemState.reports.length}`);
-  } catch (err) {
-    console.error("[SafeZone CLOUD] Reading data from Firestore failed:", err);
+  } else {
+    console.warn(`[SafeZone CLOUD] ${context}:`, err?.message || err);
   }
 }
 
-// Helper: Synchronize memory state into Cloud Firestore (Asynchronous)
+// Helper: Synchronize memory state from Cloud Firestore (Cached & Deduplicated)
+async function syncFromCloud(force = false) {
+  if (!useFirebase || !db) return;
+  const now = Date.now();
+  if (now < firestoreCooldownUntil) return;
+  if (!force && hasInitialCloudSync && now - lastCloudSyncAt < CLOUD_SYNC_TTL_MS) {
+    return;
+  }
+
+  if (cloudSyncPromise) {
+    return cloudSyncPromise;
+  }
+
+  cloudSyncPromise = (async () => {
+    try {
+      const configDoc = await getDoc(doc(db, "system", "config"));
+      if (configDoc.exists()) {
+        const configData = configDoc.data();
+        systemState.isInitialized = configData.isInitialized ?? false;
+        systemState.schoolName = configData.schoolName ?? "";
+        systemState.schools = configData.schools ?? [];
+        if (configData.schoolSettings) {
+          systemState.schoolSettings = configData.schoolSettings;
+        }
+      }
+
+      // Load dynamic Counselor list
+      const counselorsCol = await getDocs(collection(db, "counselors"));
+      const tempCounselors: Counselor[] = [];
+      counselorsCol.forEach((docSnap) => {
+        tempCounselors.push(docSnap.data() as Counselor);
+      });
+      if (counselorsCol.size > 0 || configDoc.exists()) {
+        systemState.counselors = tempCounselors;
+      }
+
+      // Load student anonymous reports
+      const reportsCol = await getDocs(collection(db, "reports"));
+      const tempReports: Report[] = [];
+      reportsCol.forEach((docSnap) => {
+        tempReports.push(docSnap.data() as Report);
+      });
+      if (reportsCol.size > 0 || configDoc.exists()) {
+        const mergedReports = [...systemState.reports];
+
+        tempReports.forEach((cloudReport) => {
+          const uppercaseCode = cloudReport.code.toUpperCase();
+          if (deletedReportCodes.has(uppercaseCode)) {
+            return;
+          }
+
+          const idx = mergedReports.findIndex(r => r.code.toUpperCase() === uppercaseCode);
+          if (idx === -1) {
+            mergedReports.push(cloudReport);
+          } else {
+            const memReport = mergedReports[idx];
+            const cloudMsgCount = cloudReport.responses?.length || 0;
+            const memMsgCount = memReport.responses?.length || 0;
+
+            if (cloudMsgCount > memMsgCount) {
+              mergedReports[idx] = cloudReport;
+            } else if (cloudMsgCount === memMsgCount) {
+              mergedReports[idx] = {
+                ...memReport,
+                status: cloudReport.status,
+                evidenceFiles: cloudReport.evidenceFiles || memReport.evidenceFiles
+              };
+            }
+          }
+        });
+
+        systemState.reports = mergedReports.filter(memReport => {
+          const uppercaseCode = memReport.code.toUpperCase();
+          if (deletedReportCodes.has(uppercaseCode)) {
+            return false;
+          }
+          const inCloud = tempReports.some(cloudReport => cloudReport.code.toUpperCase() === uppercaseCode);
+          if (inCloud) {
+            return true;
+          }
+          try {
+            const createdAt = new Date(memReport.date).getTime();
+            const ageMs = Date.now() - createdAt;
+            if (ageMs < 20000) {
+              return true;
+            }
+          } catch {
+            // Fallback
+          }
+          return false;
+        });
+      }
+
+      hasInitialCloudSync = true;
+      lastCloudSyncAt = Date.now();
+      persistLocalState();
+      console.log(`[SafeZone CLOUD] Synchronized state with cloud Firestore. Counselors: ${systemState.counselors.length}, Reports: ${systemState.reports.length}`);
+    } catch (err) {
+      hasInitialCloudSync = true; // Prevent immediate retry storm on local/memory state
+      lastCloudSyncAt = Date.now();
+      handleCloudError("Reading data from Firestore failed", err);
+    } finally {
+      cloudSyncPromise = null;
+    }
+  })();
+
+  return cloudSyncPromise;
+}
+
+// Helper: Synchronize memory state into Cloud Firestore (Asynchronous, Quota-Safe)
 async function syncToCloud() {
   if (!useFirebase || !db) return;
+  if (Date.now() < firestoreCooldownUntil) return;
   try {
     // 1. Persist System Config & School Settings
     await setDoc(doc(db, "system", "config"), {
@@ -257,57 +300,40 @@ async function syncToCloud() {
       schoolSettings: systemState.schoolSettings || {}
     });
 
-    // 2. Clear old deleted counselors
-    const counselorsCol = await getDocs(collection(db, "counselors"));
-    const deleteCounselorPromises: Promise<any>[] = [];
-    counselorsCol.forEach((docSnap) => {
-      const emailId = docSnap.id;
-      const cEmail = emailId.replace(/_dot_/g, ".").toLowerCase();
-      const stillActive = systemState.counselors.some(c => c.email.toLowerCase() === cEmail);
-      if (!stillActive) {
-        deleteCounselorPromises.push(deleteDoc(doc(db, "counselors", emailId)));
-      }
-    });
-    await Promise.all(deleteCounselorPromises);
-
-    // Write all active counselors to Firestore
+    // 2. Write active counselors to Firestore
     const writeCounselorPromises = systemState.counselors.map((c) => {
       const safeId = c.email.toLowerCase().replace(/\./g, "_dot_");
       return setDoc(doc(db, "counselors", safeId), c);
     });
     await Promise.all(writeCounselorPromises);
 
-    // 3. Clear old deleted/reset reports
-    const reportsCol = await getDocs(collection(db, "reports"));
-    const deleteReportPromises: Promise<any>[] = [];
-    reportsCol.forEach((docSnap) => {
-      const codeId = docSnap.id;
-      const rCode = codeId.replace(/_dash_/g, "-").toUpperCase();
-      const stillActive = systemState.reports.some(r => r.code.toUpperCase() === rCode);
-      if (!stillActive) {
-        deleteReportPromises.push(deleteDoc(doc(db, "reports", codeId)));
-      }
-    });
-    await Promise.all(deleteReportPromises);
+    // 3. Delete any explicitly deleted reports and write active reports
+    if (deletedReportCodes.size > 0) {
+      const deletePromises = Array.from(deletedReportCodes).map((code) => {
+        const safeId = code.toUpperCase().replace(/-/g, "_dash_");
+        return deleteDoc(doc(db, "reports", safeId)).catch(() => {});
+      });
+      await Promise.all(deletePromises);
+    }
 
-    // Write all current reports to Firestore
     const writeReportPromises = systemState.reports.map((r) => {
       const safeId = r.code.toUpperCase().replace(/-/g, "_dash_");
       return setDoc(doc(db, "reports", safeId), r);
     });
     await Promise.all(writeReportPromises);
 
-    // 4. Write Student Sync Records to Firestore
-    if (systemState.studentSyncRecords) {
-      const syncPromises = Object.entries(systemState.studentSyncRecords).map(([pinHash, record]) => {
-        return setDoc(doc(db, "student_sync", pinHash), record);
-      });
-      await Promise.all(syncPromises);
-    }
-
+    lastCloudSyncAt = Date.now();
     console.log(`[SafeZone CLOUD] Successfully updated database snapshot in Cloud Firestore.`);
   } catch (err) {
-    console.error("[SafeZone CLOUD] Writing state to Firestore failed:", err);
+    handleCloudError("Writing state to Firestore failed", err);
+  }
+}
+
+function persistLocalState() {
+  try {
+    fs.writeFileSync(DB_FILE, JSON.stringify(systemState, null, 2), "utf-8");
+  } catch (err) {
+    console.error("[SafeZone System] Error saving state to local storage file:", err);
   }
 }
 
@@ -323,16 +349,11 @@ try {
 }
 
 // Run bootstrap synchronization with Cloud Firestore asynchronously
-syncFromCloud().catch(err => console.error("Initial syncFromCloud failed:", err));
+syncFromCloud(true).catch(err => console.warn("Initial syncFromCloud skipped:", err?.message || err));
 
 async function persistState() {
-  try {
-    fs.writeFileSync(DB_FILE, JSON.stringify(systemState, null, 2), "utf-8");
-    // Trigger and wait for cloud synchronization to prevent race conditions during immediate fetches
-    await syncToCloud();
-  } catch (err) {
-    console.error("[SafeZone System] Error saving state to storage file:", err);
-  }
+  persistLocalState();
+  await syncToCloud();
 }
 
 // --- API Endpoints ---
@@ -397,11 +418,11 @@ app.post("/api/system/setup", async (req, res) => {
         isInitialized: true,
         schoolName: "Tất cả các Trường học SafeZone",
         schools: [
-          "THPT Chuyên Hà Nội - Amsterdam",
-          "THPT Phan Đình Phùng",
-          "THPT Chu Văn An",
-          "THPT Kim Liên",
-          "THPT Việt Đức"
+          "Trường THPT A",
+          "Trường THPT B",
+          "Trường THPT C",
+          "Trường THPT D",
+          "Trường THPT E"
         ],
         counselors: [
           {
@@ -412,45 +433,45 @@ app.post("/api/system/setup", async (req, res) => {
             school: "Tất cả"
           },
           {
-            email: "amsterdam.counselor@school.edu.vn",
+            email: "schoola.counselor@school.edu.vn",
             password: "ams123@safe",
             name: "Cô Trịnh Phương Linh",
             role: "Counselor",
-            school: "THPT Chuyên Hà Nội - Amsterdam"
+            school: "Trường THPT A"
           },
           {
-            email: "pdp.counselor@school.edu.vn",
+            email: "schoolb.counselor@school.edu.vn",
             password: "pdp123@safe",
             name: "Thầy Vũ Hoàng Hải",
             role: "Counselor",
-            school: "THPT Phan Đình Phùng"
+            school: "Trường THPT B"
           },
           {
-            email: "cva.counselor@school.edu.vn",
+            email: "schoolc.counselor@school.edu.vn",
             password: "cva123@safe",
             name: "Cô Phạm Mai Chi",
             role: "Counselor",
-            school: "THPT Chu Văn An"
+            school: "Trường THPT C"
           },
           {
-            email: "kl.counselor@school.edu.vn",
+            email: "schoold.counselor@school.edu.vn",
             password: "kl123@safe",
             name: "Thầy Nguyễn Tiến Dũng",
             role: "Counselor",
-            school: "THPT Kim Liên"
+            school: "Trường THPT D"
           },
           {
-            email: "vd.counselor@school.edu.vn",
+            email: "schoole.counselor@school.edu.vn",
             password: "vd123@safe",
             name: "Cô Lê Mỹ Hạnh",
             role: "Counselor",
-            school: "THPT Việt Đức"
+            school: "Trường THPT E"
           }
         ],
         reports: [
           {
             code: "SA-1001",
-            schoolName: "THPT Chuyên Hà Nội - Amsterdam",
+            schoolName: "Trường THPT A",
             category: "Bạo lực trắng (Cô lập, đồn thổi dịch chuyển)",
             title: "Bị cả lớp tẩy chay và lập nhóm chat bêu rếu ẩn danh",
             description: "Sau khi em từ chối cho các bạn chép bài thi, các bạn trong nhóm trưởng lớp đã chụp ảnh dìm của em và chia sẻ khắp các nhóm chat riêng. Hiện tại cả lớp không ai nói chuyện với em, khi em bước vào lớp mọi người đều im lặng cười cợt.",
@@ -461,7 +482,7 @@ app.post("/api/system/setup", async (req, res) => {
             responses: [
               {
                 sender: "Counselor",
-                message: "Chào em, Thầy/Cô ban tâm lý trường Amsterdam đã nhận được báo cáo của em. Thầy cô hiểu em đang rất cô đơn và áp lực. Hành vi tự ý lập nhóm bôi nhọ là bạo lực trắng nguy hiểm. Chiều mai, em có thể ghé Phòng Tâm lý học đường (tầng 2 nhà B) vào tiết 5 để tụi mình trò chuyện an toàn nhé. Thầy cô cam kết bảo mật danh tính tuyệt đối.",
+                message: "Chào em, Thầy/Cô ban tâm lý nhà trường đã nhận được báo cáo của em. Thầy cô hiểu em đang rất cô đơn và áp lực. Hành vi tự ý lập nhóm bôi nhọ là bạo lực trắng nguy hiểm. Chiều mai, em có thể ghé Phòng Tâm lý học đường (tầng 2 nhà B) vào tiết 5 để tụi mình trò chuyện an toàn nhé. Thầy cô cam kết bảo mật danh tính tuyệt đối.",
                 date: "2026-06-03T09:00:00Z"
               },
               {
@@ -478,7 +499,7 @@ app.post("/api/system/setup", async (req, res) => {
           },
           {
             code: "SA-1002",
-            schoolName: "THPT Phan Đình Phùng",
+            schoolName: "Trường THPT B",
             category: "Bạo lực mạng (Cyberbullying & Spreading)",
             title: "Bị giả mạo tài khoản Facebook đăng tải thông tin vu khống",
             description: "Có ai đó đã lập một trang cá nhân giống hệt em, sử dụng ảnh của em rồi nhắn tin gạ tình, lừa đảo khắp nơi. Điều này làm ảnh hưởng nghiêm trọng danh dự của em, em sợ đến trường.",
@@ -489,7 +510,7 @@ app.post("/api/system/setup", async (req, res) => {
             responses: [
               {
                 sender: "Counselor",
-                message: "Ban giám hiệu và ban tư vấn số Phan Đình Phùng đã làm việc trực tiếp với Đoàn trường và cơ quan công nghệ để báo cáo vi phạm tài khoản giả mạo, hiện tài khoản kia đã bị vô hiệu hóa hoàn toàn. Chúng tôi cũng đã tuyên truyền điều 15 trong Bộ quy tắc ứng xử số tại lớp của em. Em có thể yên tâm học tập nhé.",
+                message: "Ban giám hiệu và ban tư vấn số nhà trường đã làm việc trực tiếp với Đoàn trường và cơ quan công nghệ để báo cáo vi phạm tài khoản giả mạo, hiện tài khoản kia đã bị vô hiệu hóa hoàn toàn. Chúng tôi cũng đã tuyên truyền điều 15 trong Bộ quy tắc ứng xử số tại lớp của em. Em có thể yên tâm học tập nhé.",
                 date: "2026-05-29T10:00:00Z"
               },
               {
@@ -627,7 +648,7 @@ app.post("/api/system/handover", async (req, res) => {
       password: "admin123@safe",
       name: "Thầy Nguyễn Đắc Quang Minh",
       role: "Admin" as const,
-      school: "Trường THPT Phan Đăng Lưu"
+      school: "Tất cả"
     };
 
     // Thêm/cập nhật admin của trường mới và giữ tài khoản của Master
@@ -847,6 +868,10 @@ app.post("/api/admin/counselors/delete", async (req, res) => {
 
     systemState.counselors.splice(targetIndex, 1);
     await persistState();
+    if (useFirebase && db && Date.now() >= firestoreCooldownUntil) {
+      const safeId = target.email.toLowerCase().replace(/\./g, "_dot_");
+      deleteDoc(doc(db, "counselors", safeId)).catch((err) => handleCloudError("Error deleting counselor from Firestore", err));
+    }
     res.json({ success: true, message: "Đã thu hồi đặc quyền truy cập của giáo viên thành công!", counselors: systemState.counselors });
   } catch (error: any) {
     res.status(500).json({ error: error.message });
@@ -1105,13 +1130,13 @@ app.post("/api/student/sync/push", async (req, res) => {
     };
 
     systemState.studentSyncRecords[pinHash] = record;
-    await persistState();
+    persistLocalState();
 
-    if (useFirebase && db) {
+    if (useFirebase && db && Date.now() >= firestoreCooldownUntil) {
       try {
         await setDoc(doc(db, "student_sync", pinHash), record);
       } catch (e) {
-        console.error("[SafeZone CLOUD] Error pushing student sync record to Firestore:", e);
+        handleCloudError("Error pushing student sync record to Firestore", e);
       }
     }
 
@@ -1146,7 +1171,7 @@ app.post("/api/student/sync/pull", async (req, res) => {
     let record = systemState.studentSyncRecords?.[pinHash];
 
     // Tra cứu thêm trên Firestore Cloud nếu chưa có trong RAM
-    if (!record && useFirebase && db) {
+    if (!record && useFirebase && db && Date.now() >= firestoreCooldownUntil) {
       try {
         const snap = await getDoc(doc(db, "student_sync", pinHash));
         if (snap.exists()) {
@@ -1157,7 +1182,7 @@ app.post("/api/student/sync/pull", async (req, res) => {
           }
         }
       } catch (e) {
-        console.error("[SafeZone CLOUD] Error pulling student sync from Firestore:", e);
+        handleCloudError("Error pulling student sync from Firestore", e);
       }
     }
 
@@ -1195,14 +1220,14 @@ app.post("/api/student/sync/wipe", async (req, res) => {
 
     if (systemState.studentSyncRecords && systemState.studentSyncRecords[pinHash]) {
       delete systemState.studentSyncRecords[pinHash];
-      await persistState();
+      persistLocalState();
     }
 
-    if (useFirebase && db) {
+    if (useFirebase && db && Date.now() >= firestoreCooldownUntil) {
       try {
         await deleteDoc(doc(db, "student_sync", pinHash));
       } catch (e) {
-        console.error("[SafeZone CLOUD] Error deleting student sync from Firestore:", e);
+        handleCloudError("Error deleting student sync from Firestore", e);
       }
     }
 

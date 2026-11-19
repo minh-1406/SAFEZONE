@@ -1,9 +1,7 @@
 {
   "isInitialized": false,
-  "schoolName": "Trường THPT Phan Đăng Lưu",
-  "schools": [
-    "Trường THPT Phan Đăng Lưu"
-  ],
+  "schoolName": "",
+  "schools": [],
   "counselors": [
     {
       "email": "c3ndqminh.pdl@hue.edu.vn",

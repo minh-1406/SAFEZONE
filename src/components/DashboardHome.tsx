@@ -139,11 +139,7 @@ export default function DashboardHome({
         setSchoolList(combinedSchools);
         setAllSchoolSettings(mergedSettings);
 
-        const defaultSchool =
-          savedActiveSchool ||
-          (data.schoolName && data.schoolName !== "Tất cả các Trường học SafeZone" ? data.schoolName : "") ||
-          combinedSchools[0] ||
-          "";
+        const defaultSchool = savedActiveSchool || "";
 
         setSelectedHotlineSchool(defaultSchool);
         if (defaultSchool && mergedSettings[defaultSchool]) {
@@ -418,7 +414,7 @@ export default function DashboardHome({
                             list="safezone_school_hotline_list"
                             value={selectedHotlineSchool}
                             onChange={(e) => handleSchoolNameChange(e.target.value)}
-                            placeholder="VD: THPT Phan Đăng Lưu, THPT Chu Văn An..."
+                            placeholder="VD: Trường THPT của em..."
                             className="w-full rounded-xl border border-slate-200 bg-slate-50/70 px-3 py-1.5 text-[13px] font-bold text-slate-800 focus:border-emerald-500 focus:bg-white focus:outline-none"
                           />
                           <datalist id="safezone_school_hotline_list">

@@ -59,8 +59,13 @@ interface CounselorDashboardProps {
 export default function CounselorDashboard({ onRefreshData, onSystemReset }: CounselorDashboardProps) {
   // Trạng thái đăng nhập của nhà tâm lý
   const [currentCounselor, setCurrentCounselor] = useState<any | null>(() => {
-    const saved = localStorage.getItem("logged_counselor");
-    return saved ? JSON.parse(saved) : null;
+    try {
+      const saved = localStorage.getItem("logged_counselor");
+      return saved ? JSON.parse(saved) : null;
+    } catch {
+      localStorage.removeItem("logged_counselor");
+      return null;
+    }
   });
 
   // Giao diện Form Đăng nhập
@@ -604,7 +609,7 @@ export default function CounselorDashboard({ onRefreshData, onSystemReset }: Cou
   // NGUYÊN TẮC BẢO MẬT TUYỆT ĐỐI:
   // - Mỗi tài khoản (kể cả Master Distributor) chỉ có quyền xem hồ sơ học sinh thuộc trường được gán của mình
   // - Hoàn toàn không thể xem chéo hồ sơ của bất kỳ trường nào khác sau khi bàn giao
-  const assignedSchool = currentCounselor?.school === "Tất cả" ? "Trường THPT Phan Đăng Lưu" : currentCounselor?.school;
+  const assignedSchool = currentCounselor?.school === "Tất cả" ? null : currentCounselor?.school;
 
   const filteredReports = reports.filter(r => {
     // 1. Phân quyền trường học: Khóa cứng theo trường được gán của tài khoản

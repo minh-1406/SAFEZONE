@@ -69,7 +69,14 @@ export default function AiCounselor({ onNavigateToReporting }: AiCounselorProps)
         body: JSON.stringify({ messages: historyPayload })
       });
 
-      const data = await res.json();
+      const rawText = await res.text();
+      let data: any = {};
+      try {
+        data = rawText ? JSON.parse(rawText) : {};
+      } catch {
+        data = {};
+      }
+
       if (res.ok && data.reply) {
         setMessages(prev => [...prev, {
           sender: "AI",

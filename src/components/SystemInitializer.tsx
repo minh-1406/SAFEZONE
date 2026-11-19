@@ -323,7 +323,7 @@ export default function SystemInitializer({ onSetupSuccess }: SystemInitializerP
                     <span>Nên nhập kèm địa danh Tỉnh/Thành phố hoặc Quận/Huyện không?</span>
                   </div>
                   <p>
-                    <strong className="text-slate-800">Cực kỳ khuyên dùng!</strong> Vì trên toàn quốc có rất nhiều trường trùng tên nhau (ví dụ: <span className="italic">THCS Nguyễn Du</span>, <span className="italic">THPT Phan Đình Phùng</span>). Để hệ thống phân biệt riêng biệt và học sinh không bị nhầm lẫn khi nộp đơn, em hãy đặt tên theo các công thức sau:
+                    <strong className="text-slate-800">Cực kỳ khuyên dùng!</strong> Vì trên toàn quốc có rất nhiều trường trùng tên nhau (ví dụ: <span className="italic">THCS A</span>, <span className="italic">THPT B</span>). Để hệ thống phân biệt riêng biệt và học sinh không bị nhầm lẫn khi nộp đơn, em hãy đặt tên theo các công thức sau:
                   </p>
                   
                   <div className="grid grid-cols-1 sm:grid-cols-2 gap-2 pt-1 font-mono text-[15px]">
@@ -333,7 +333,7 @@ export default function SystemInitializer({ onSetupSuccess }: SystemInitializerP
                       <div className="bg-slate-50/60 backdrop-blur-sm px-1.5 py-1 rounded text-slate-800 font-bold border">
                         Tên Trường (Tên Tỉnh)
                       </div>
-                      <p className="text-slate-400 text-[15px]">Ví dụ: THPT Phan Đình Phùng (Hà Nội)</p>
+                      <p className="text-slate-400 text-[15px]">Ví dụ: Trường THPT A (Tỉnh/TP)</p>
                     </div>
                     
                     <div className="bg-white p-2 rounded-xl border border-slate-100 space-y-1">
@@ -342,7 +342,7 @@ export default function SystemInitializer({ onSetupSuccess }: SystemInitializerP
                       <div className="bg-slate-50/60 backdrop-blur-sm px-1.5 py-1 rounded text-slate-800 font-bold border">
                         Tên Trường, Quận/Huyện, Tỉnh
                       </div>
-                      <p className="text-slate-400 text-[15px]">Ví dụ: THCS Nguyễn Du, Quận 1, TP. HCM</p>
+                      <p className="text-slate-400 text-[15px]">Ví dụ: Trường THCS B, Quận/Huyện, Tỉnh</p>
                     </div>
                   </div>
                   

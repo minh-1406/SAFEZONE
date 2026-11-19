@@ -94,18 +94,8 @@ export default function AnonymousReporting({ onReportCreated, initialTrackingCod
           const data = await res.json();
           if (data.schools && data.schools.length > 0) {
             setSchoolOptions(data.schools);
-            // Auto pre-select if only 1 school exists
-            if (data.schools.length === 1) {
-              setSchoolName(data.schools[0]);
-            }
           } else {
-            setSchoolOptions([
-              "THPT Chuyên Hà Nội - Amsterdam",
-              "THPT Phan Đình Phùng",
-              "THPT Chu Văn An",
-              "THPT Kim Liên",
-              "THPT Việt Đức"
-            ]);
+            setSchoolOptions([]);
           }
         }
       } catch (err) {
@@ -354,17 +344,20 @@ export default function AnonymousReporting({ onReportCreated, initialTrackingCod
                   <label className="block text-[15px] font-bold text-slate-700 uppercase tracking-wider">
                     Em học tại trường nào? <span className="text-pink-500">*</span>
                   </label>
-                  <select 
+                  <input
+                    type="text"
+                    list="anonymous_school_options"
                     value={schoolName}
                     onChange={(e) => setSchoolName(e.target.value)}
+                    placeholder="Chọn từ danh sách hoặc nhập tên trường của em..."
                     className="w-full rounded-2xl border border-slate-200 p-3 text-[15px] bg-slate-50/60 backdrop-blur-sm text-slate-800 outline-hidden focus:border-indigo-500 focus:bg-white focus:ring-1 focus:ring-indigo-500 transition-all"
                     required
-                  >
-                    <option value="">-- Bấm Chọn Trường Học --</option>
+                  />
+                  <datalist id="anonymous_school_options">
                     {schoolOptions.map(opt => (
-                      <option key={opt} value={opt}>{opt}</option>
+                      <option key={opt} value={opt} />
                     ))}
-                  </select>
+                  </datalist>
                 </div>
 
                 <div className="space-y-1.5">

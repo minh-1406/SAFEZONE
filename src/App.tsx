@@ -38,8 +38,8 @@ export default function App() {
     }, 150);
   };
 
-  const [isSystemInitialized, setIsSystemInitialized] = useState<boolean | null>(null);
-  const [isCheckingSystem, setIsCheckingSystem] = useState(true);
+  const [isSystemInitialized, setIsSystemInitialized] = useState<boolean>(true);
+  const [forceSetupWizard, setForceSetupWizard] = useState<boolean>(false);
 
   // Check pin status on render
   const checkPinStatus = () => {
@@ -57,14 +57,12 @@ export default function App() {
       const res = await fetch("/api/system/status");
       if (res.ok) {
         const data = await res.json();
-        setIsSystemInitialized(data.isInitialized);
+        setIsSystemInitialized(data.isInitialized ?? true);
       } else {
         setIsSystemInitialized(true); // Fallback
       }
     } catch {
       setIsSystemInitialized(true);
-    } finally {
-      setIsCheckingSystem(false);
     }
   };
 
@@ -156,31 +154,15 @@ export default function App() {
     setIsPinLocked(false);
   };
 
-  if (isCheckingSystem) {
-    return (
-      <div className="min-h-screen bg-gradient-to-r from-indigo-600 to-violet-600 hover:from-indigo-700 hover:to-violet-700 shadow-md shadow-indigo-200/50 text-white border-0 flex flex-col items-center justify-center p-6 text-slate-300">
-        <div className="space-y-4 text-center max-w-sm">
-          <div className="inline-flex h-12 w-12 items-center justify-center rounded-2xl bg-indigo-650 text-white shadow-xl shadow-indigo-600/10">
-            <ShieldAlert size={32} className="animate-pulse" />
-          </div>
-          <h2 className="text-[15px] font-bold tracking-wider text-white uppercase font-sans">Đang đồng bộ hệ thống SafeZone...</h2>
-          <div className="w-16 h-1 bg-slate-800 rounded-full mx-auto overflow-hidden relative">
-            <div className="absolute top-0 left-0 h-full w-2/3 bg-indigo-500 rounded-full animate-pulse"></div>
-          </div>
-        </div>
-      </div>
-    );
-  }
-
   const urlParams = new URLSearchParams(window.location.search);
-  const isStudentBypass = urlParams.get("role") === "student";
   const isForceSetup = urlParams.get("setup") === "true" || urlParams.get("role") === "admin_setup" || urlParams.get("role") === "setup";
 
-  if (isForceSetup || (isSystemInitialized === false && !isStudentBypass)) {
+  if (isForceSetup || forceSetupWizard) {
     return (
       <SystemInitializer 
         onSetupSuccess={() => {
           setIsSystemInitialized(true);
+          setForceSetupWizard(false);
           // Redirect or clear URL query params so they can see the direct user dashboard next
           const cleanUrl = window.location.protocol + "//" + window.location.host + window.location.pathname;
           window.history.pushState({ path: cleanUrl }, "", cleanUrl);
@@ -315,7 +297,10 @@ export default function App() {
         {activeTab === "counselor" && (
           <CounselorDashboard 
             onRefreshData={fetchReportsData}
-            onSystemReset={() => setIsSystemInitialized(false)}
+            onSystemReset={() => {
+              setIsSystemInitialized(false);
+              setForceSetupWizard(true);
+            }}
           />
         )}
       </main>
