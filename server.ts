@@ -1248,15 +1248,25 @@ app.post("/api/gemini/chat", async (req, res) => {
   try {
     const { messages } = req.body; // Expects array of [{ role: "user" | "model", message: string }]
     
-    const activeApiKey = process.env.GEMINI_API_KEY || geminiApiKey;
-    const activeClient = aiClient || (activeApiKey ? new GoogleGenAI({
-      apiKey: activeApiKey,
-      httpOptions: {
-        headers: {
-          "User-Agent": "aistudio-build",
-        },
-      },
-    }) : null);
+    const activeApiKey = (
+      process.env.GEMINI_API_KEY ||
+      process.env.GOOGLE_API_KEY ||
+      process.env.GOOGLE_GENERATIVE_AI_API_KEY ||
+      process.env.VITE_GEMINI_API_KEY ||
+      geminiApiKey ||
+      ""
+    ).trim();
+    const activeClient = activeApiKey
+      ? aiClient ||
+        new GoogleGenAI({
+          apiKey: activeApiKey,
+          httpOptions: {
+            headers: {
+              "User-Agent": "aistudio-build",
+            },
+          },
+        })
+      : null;
 
     if (!activeClient) {
       return res.status(503).json({ 
@@ -1350,7 +1360,8 @@ const isProduction = process.env.NODE_ENV === "production";
 
 async function bootstrap() {
   if (!isProduction) {
-    const { createServer: createViteServer } = await import("vite");
+    const vitePkg = "vite";
+    const { createServer: createViteServer } = await import(/* @vite-ignore */ vitePkg);
     const vite = await createViteServer({
       server: { middlewareMode: true, hmr: false },
       appType: "spa",

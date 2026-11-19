@@ -84,6 +84,7 @@ export default function AiCounselor({ onNavigateToReporting }: AiCounselorProps)
           time: new Date().toLocaleTimeString("vi-VN", { hour: "2-digit", minute: "2-digit" })
         }]);
       } else {
+        console.error("[SafeZone AI] Phản hồi không hợp lệ:", res.status, rawText.slice(0, 300));
         setMessages(prev => [...prev, {
           sender: "AI",
           text: data.reply || "Rất tiếc, đường truyền tư vấn tâm lý AI gặp gián đoạn tạm thời. Em đừng buồn nhé, hãy áp dụng bộ quy tắc PAUSE trong cẩm nang hoặc gửi báo cáo bảo mật danh tính trực tiếp cho Ban giám hiệu ngay bên dưới nhé!",
